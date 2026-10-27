@@ -1,0 +1,48 @@
+{
+  "title": "DoS Lab — Alvo",
+  "timezone": "browser",
+  "refresh": "2s",
+  "time": { "from": "now-3m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Requisições por segundo",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "rate(nginx_http_requests_total[10s])", "legendFormat": "RPS" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Conexões ativas (nginx)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "nginx_connections_active", "legendFormat": "ativas" },
+        { "expr": "nginx_connections_reading", "legendFormat": "lendo (Slowloris sobe isso)" },
+        { "expr": "nginx_connections_waiting", "legendFormat": "esperando" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "CPU do alvo",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "rate(container_cpu_usage_seconds_total{name=\"target\"}[10s])", "legendFormat": "CPU target" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Memória do alvo",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "container_memory_usage_bytes{name=\"target\"}", "legendFormat": "memória target" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}
