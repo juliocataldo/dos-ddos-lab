@@ -75,6 +75,20 @@ Valide o ambiente antes de usar em aula:
 Roteiro completo do aluno, com tabela de medição e perguntas de fechamento, em
 [`student/roteiro-aluno.md`](student/roteiro-aluno.md).
 
+**Bônus — capturando um ataque para análise no Wireshark:** o container
+`attacker` tem `tcpdump` instalado (o `target` não tem). Para gravar o
+tráfego de um ataque e abrir localmente:
+
+```bash
+docker exec attacker tcpdump -i eth0 -w /tmp/flood.pcap &   # inicia a captura
+docker exec k6 k6 run /scripts/flood.js                      # dispara o ataque
+docker exec attacker pkill tcpdump                            # para a captura
+docker cp attacker:/tmp/flood.pcap ./flood.pcap               # copia pro host
+```
+
+Abra `flood.pcap` no Wireshark e filtre por `http.request` para ver só as
+requisições do ataque.
+
 ## Estrutura do repositório
 
 ```
