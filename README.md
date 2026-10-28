@@ -10,16 +10,19 @@ máquina.
 
 Ao final do laboratório, o aluno é capaz de:
 
-- Diferenciar um ataque **volumétrico/protocolo** (SYN flood) de um ataque de
-  **camada de aplicação** (Slowloris) observando o comportamento de cada um em
-  métricas de rede e de servidor.
-- Interpretar indicadores de comprometimento de disponibilidade: estado de
-  conexões TCP, conexões ativas por fase (lendo/escrevendo/esperando) e taxa de
+- Diferenciar dois padrões de ataque de camada de aplicação que esgotam
+  recursos distintos do servidor: **Slowloris** (esgota conexões simultâneas
+  com pouquíssimo tráfego) e **HTTP flood** (esgota CPU/capacidade de
+  processamento com alto volume de requisições).
+- Interpretar indicadores de comprometimento de disponibilidade: conexões
+  ativas por fase (lendo/escrevendo/esperando), uso de CPU e taxa de
   requisições.
 - Aplicar e **medir o efeito** de uma contramedida específica para cada vetor
-  (TCP SYN cookies; timeouts e `limit_conn` no servidor web).
+  — `limit_conn` (limite de conexões simultâneas por IP) para Slowloris,
+  `limit_req` (limite de taxa de requisições por IP) para HTTP flood — e
+  entender por que uma não resolve o problema da outra.
 - Discutir os limites de mitigação em nível de host frente a um ataque que
-  satura o link de rede.
+  satura o link de rede (fora do escopo deste lab).
 
 ## Arquitetura
 
@@ -40,9 +43,9 @@ Ao final do laboratório, o aluno é capaz de:
 
 | Componente | Papel |
 |---|---|
-| `target` | nginx configurado com capacidade reduzida (1 worker, 128 conexões), simulando um servidor pequeno |
-| `attacker` | `hping3` (SYN flood) e `slowhttptest` (Slowloris), com scripts de taxa e duração limitadas |
-| `k6` | gera tráfego legítimo contínuo, para medir o impacto real em usuário |
+| `target` | nginx configurado com capacidade reduzida (1 worker, 128 conexões, limite de 1 CPU) e uma rota `/heavy.txt` propositalmente cara (gzip em tempo real) |
+| `attacker` | `slowhttptest` (Slowloris) e `hping3` (SYN flood, conceitual — ver limitações), com scripts de taxa e duração limitadas |
+| `k6` | gera tráfego legítimo (`baseline.js`) e o HTTP flood (`flood.js`) contra `/heavy.txt` |
 | `nginx-exporter` + `Prometheus` + `Grafana` | coleta e exibe RPS, conexões ativas e uso de CPU/memória do alvo em tempo real |
 
 ## Pré-requisitos
@@ -65,7 +68,8 @@ docker compose up -d
 Valide o ambiente antes de usar em aula:
 
 ```bash
-./test-syn.sh          # mede o efeito do SYN flood nesta máquina (PASSOU/NÃO PASSOU)
+./test-flood.sh        # mede o efeito do HTTP flood nesta máquina (PASSOU/NÃO PASSOU)
+./test-syn.sh           # idem para o SYN flood — ver "Limitações conhecidas"
 ```
 
 Roteiro completo do aluno, com tabela de medição e perguntas de fechamento, em
@@ -83,16 +87,19 @@ dos-ddos-lab/
   k6/                # script de tráfego legítimo (baseline.js)
   student/           # roteiro do aluno + termo de autorização
   test-syn.sh         # valida o efeito do SYN flood no host atual
+  test-flood.sh        # valida o efeito do HTTP flood no host atual
 ```
 
 ## Limitações conhecidas
 
 O efeito do SYN flood depende de como o runtime/driver de rede do Docker trata
-pacotes `hping3 --rand-source` — em alguns ambientes (runtimes de container
-mais restritos, certas configurações de rede) os pacotes forjados não chegam
-ao alvo com volume suficiente para gerar `SYN_RECV` mensurável. O Slowloris,
-por operar em HTTP/TCP padrão, não tem essa dependência e é o cenário
-recomendado quando o `test-syn.sh` não confirmar efeito.
+pacotes `hping3 --rand-source` — em ambientes mais restritos (certos runtimes
+de container, certas configurações de rede), os pacotes forjados não chegam
+ao alvo com volume suficiente para gerar `SYN_RECV` mensurável. Por isso o
+Slowloris e o HTTP flood — que operam em HTTP/TCP padrão, sem spoofing — são
+os dois vetores centrais e medidos deste lab; o SYN flood fica disponível
+como exercício conceitual, condicionado ao `./test-syn.sh` confirmar efeito
+na máquina usada.
 
 ## Ética e legislação
 

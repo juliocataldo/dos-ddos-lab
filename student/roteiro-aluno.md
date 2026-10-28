@@ -13,7 +13,7 @@ Abra:
 - Site alvo: http://localhost:8080
 - Grafana: http://localhost:3000 (sem login)
 
-## 1. Baseline — como é o site saudável (10 min)
+## 1. Baseline — como é o site saudável (5 min)
 
 Em um terminal, gere tráfego legítimo:
 
@@ -21,74 +21,88 @@ Em um terminal, gere tráfego legítimo:
 docker exec k6 k6 run /scripts/baseline.js
 ```
 
-Enquanto roda, olhe o Grafana. Anote na tabela abaixo: RPS normal, conexões ativas normais.
+Enquanto roda, olhe o Grafana. Anote: RPS normal, conexões ativas normais, CPU normal.
 
-**Antes de continuar, escreva uma previsão:** o que você acha que vai acontecer com o RPS quando o ataque começar?
+**Antes de continuar, escreva uma previsão:** entre "muita gente pedindo pouca coisa"
+e "pouca gente pedindo uma coisa cara", qual você acha que derruba o site mais rápido?
 
 _____________________________________________
 
-## 2. SYN flood (15 min)
+## 2. Ataque de aplicação de baixo volume — Slowloris (15 min)
 
-Abra outro terminal e entre no container atacante:
+Entre no container atacante:
 
 ```bash
 docker exec -it attacker bash
-attack-syn.sh 30 200
+attack-slowloris.sh 30 180
 ```
 
 Deixe o `baseline.js` rodando ao mesmo tempo (rode de novo se já tiver terminado).
 
-Em outro terminal, observe o estado das conexões no alvo (a imagem não tem `ss`,
-então lemos direto de `/proc/net/tcp` — o estado `03` em hexadecimal é `SYN_RECV`):
+Observe no Grafana: **conexões ativas** sobem bastante, mas **CPU e RPS quase não se mexem**.
+Esse é o padrão de um ataque que não precisa de volume — só precisa manter conexões
+abertas e incompletas até esgotar as vagas do servidor.
+
+## 3. Ataque volumétrico de aplicação — HTTP flood (15 min)
+
+Agora o oposto: muita requisição, numa rota propositalmente cara de responder
+(`/heavy.txt`, que o nginx precisa comprimir a cada pedido).
 
 ```bash
-docker exec target sh -c "awk 'NR>1 {print \$4}' /proc/net/tcp | sort | uniq -c"
+docker exec k6 k6 run /scripts/flood.js
 ```
 
-Anote: quantas conexões no estado `03`? O que aconteceu com o RPS no Grafana?
+Observe no Grafana: desta vez é a **CPU que vai ao talo** (o alvo está limitado a
+1 CPU neste lab), enquanto RPS despenca porque o servidor não consegue processar
+a fila.
 
-## 3. Slowloris (15 min)
-
-Ainda no container atacante:
-
-```bash
-attack-slowloris.sh 30 180
-```
-
-Observe no Grafana o painel "Conexões ativas" — repare que a CPU e a banda praticamente não sobem,
-mas o site trava. Essa é a diferença entre ataque volumétrico (SYN flood) e ataque de aplicação (Slowloris).
+**Compare com o Slowloris:** qual métrica subiu em cada ataque? CPU, conexões, ou as duas?
 
 ## 4. Mitigação medida (15 min)
 
-Aplique uma mitigação por vez e **repita o ataque correspondente** para medir o efeito:
+Aplique uma mitigação por vez e **repita o ataque correspondente**:
 
 ```bash
-# mitigação para SYN flood
-docker exec target /mitigate-syn.sh
-# repita: attack-syn.sh 30 200
-
-# mitigação para Slowloris
+# mitigação para Slowloris: timeouts curtos + limite de conexões por IP
 docker exec target /mitigate-slowloris.sh
 # repita: attack-slowloris.sh 30 180
+
+# volte ao baseline antes de testar a outra mitigação
+docker exec target /reset.sh
+
+# mitigação para HTTP flood: limite de TAXA de requisições por IP
+docker exec target /mitigate-flood.sh
+# repita: docker exec k6 k6 run /scripts/flood.js
 ```
 
 Preencha a tabela:
 
-| Cenário | RPS | Conexões ativas | Site respondeu? |
+| Cenário | CPU | Conexões ativas | Site respondeu a um usuário normal? |
 |---|---|---|---|
 | Baseline | | | |
-| SYN flood (sem mitigação) | | | |
-| SYN flood (com syncookies) | | | |
 | Slowloris (sem mitigação) | | | |
-| Slowloris (com limit_conn/timeout) | | | |
+| Slowloris (com `limit_conn` + timeout) | | | |
+| HTTP flood (sem mitigação) | | | |
+| HTTP flood (com `limit_req`) | | | |
 
 ## 5. Fechamento (5 min)
 
 Responda em 3-4 linhas:
 
-1. Qual mitigação te surpreendeu mais, e por quê?
+1. `limit_conn` (conexões simultâneas) e `limit_req` (taxa de requisições) resolvem
+   problemas diferentes. Qual ataque cada um combate, e por quê o outro limite
+   não resolveria o mesmo problema?
 2. A mitigação aplicada teve algum custo para um usuário legítimo? Qual?
-3. Se o ataque fosse 1000x maior (saturando o link, não só o servidor), essas mitigações ainda resolveriam? O que seria necessário?
+3. Se o ataque fosse 1000x maior (saturando o link, não só o servidor), essas
+   mitigações ainda resolveriam? O que seria necessário?
+
+## Nota sobre SYN flood
+
+O ataque de protocolo mais clássico (SYN flood, com `hping3`) está disponível em
+`attacker/attack-syn.sh`, mas seu efeito depende muito do driver de rede do Docker
+na sua máquina — em alguns ambientes os pacotes forjados não chegam ao alvo em
+volume suficiente. Se quiser tentar: `./test-syn.sh` na raiz do repositório diz
+se vale a pena incluir no seu roteiro.
 
 ## Para encerrar
 
