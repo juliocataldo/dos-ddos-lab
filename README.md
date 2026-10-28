@@ -1,115 +1,109 @@
-# Lab DoS — SYN flood + Slowloris (60 min, treino livre)
+# Lab DoS/DDoS — SYN Flood & Slowloris em ambiente isolado
 
-## O que eu já testei e funciona (ponta a ponta)
+Laboratório hands-on para ensino de ataques de negação de serviço (DoS), construído
+para uma disciplina introdutória de Cyber Security. Todo o ambiente roda em
+containers Docker numa rede sem acesso à internet — o aluno ataca, observa o
+impacto em métricas reais e aplica uma mitigação medida, sem nunca sair da própria
+máquina.
 
-Testei num ambiente Docker isolado (sandbox, não a sua máquina) e corrigi 4 bugs
-que o build pegou:
+## Objetivo de aprendizagem
 
-1. **Build do `attacker` e do `target`** — ok.
-2. **`docker compose up`** sobe os 7 containers.
-3. **Slowloris + mitigação, com números reais medidos:**
+Ao final do laboratório, o aluno é capaz de:
 
-   | Cenário | Site responde? | Latência | Conexões ativas |
-   |---|---|---|---|
-   | Baseline | sim | ~0,001s | ~1-2 |
-   | Ataque (sem mitigação) | **não — conexão recusada** | — | — |
-   | Ataque (com `mitigate-slowloris.sh`) | sim | ~0,076s | ~45 |
+- Diferenciar um ataque **volumétrico/protocolo** (SYN flood) de um ataque de
+  **camada de aplicação** (Slowloris) observando o comportamento de cada um em
+  métricas de rede e de servidor.
+- Interpretar indicadores de comprometimento de disponibilidade: estado de
+  conexões TCP, conexões ativas por fase (lendo/escrevendo/esperando) e taxa de
+  requisições.
+- Aplicar e **medir o efeito** de uma contramedida específica para cada vetor
+  (TCP SYN cookies; timeouts e `limit_conn` no servidor web).
+- Discutir os limites de mitigação em nível de host frente a um ataque que
+  satura o link de rede.
 
-4. **`reset.sh`** volta a config ao estado inicial, confirmado.
-5. **Grafana** provisiona o dashboard automaticamente (log confirma:
-   `dashboardTitle="DoS Lab — Alvo"`), **Prometheus** confirma scrape
-   `"health":"up"` no nginx-exporter.
+## Arquitetura
 
-Dois bugs que corrigi e já estão no código:
-- O dashboard do Grafana não subia por causa de um mount aninhado dentro de
-  um volume `:ro` — reestruturei os arquivos.
-- O `nginx:alpine` padrão sobe com 8 workers × 1024 conexões, capacidade
-  grande demais para um ataque de ~150-200 conexões ter efeito visível —
-  adicionei um `nginx.conf` que limita a 1 worker / 128 conexões, simulando
-  um servidor pequeno de verdade.
+```
+┌──────────┐      rede Docker interna (sem saída p/ internet)
+│ attacker │──────────────┐
+│ hping3   │              │
+│ slowhttp │              ▼
+└──────────┘        ┌──────────┐      ┌────────────────┐      ┌───────────┐
+                     │  target  │─────▶│ nginx-exporter │─────▶│ Prometheus│
+┌──────────┐         │  nginx   │      └────────────────┘      └─────┬─────┘
+│    k6    │────────▶│          │                                    │
+│(baseline)│         └──────────┘                                    ▼
+└──────────┘                                                   ┌───────────┐
+                                                                 │  Grafana  │
+                                                                 └───────────┘
+```
 
-## O que eu NÃO consegui validar — teste você antes da aula
+| Componente | Papel |
+|---|---|
+| `target` | nginx configurado com capacidade reduzida (1 worker, 128 conexões), simulando um servidor pequeno |
+| `attacker` | `hping3` (SYN flood) e `slowhttptest` (Slowloris), com scripts de taxa e duração limitadas |
+| `k6` | gera tráfego legítimo contínuo, para medir o impacto real em usuário |
+| `nginx-exporter` + `Prometheus` + `Grafana` | coleta e exibe RPS, conexões ativas e uso de CPU/memória do alvo em tempo real |
 
-**SYN flood: não consegui confirmar que ele chega no alvo neste ambiente.**
-Mandei ~50 mil pacotes SYN com `hping3` e o contador de `accepts` do nginx
-quase não se moveu — o estado `SYN_RECV` nunca apareceu em `/proc/net/tcp`.
-Isso pode ser uma limitação específica do ambiente sandboxed onde testei
-(sockets raw/spoofing costumam ser restringidos em runtimes de container
-mais isolados) e não necessariamente do seu Docker Desktop. **Mas é o único
-pedaço do lab que não tenho prova de que funciona — rode isto antes de
-levar para a turma:**
+## Pré-requisitos
+
+- Docker e Docker Compose
+- Nenhum conhecimento prévio de Prometheus/Grafana é necessário — o dashboard já
+  vem provisionado
+
+## Como rodar
 
 ```bash
-./test-syn.sh          # usa 15s / 500 pps por padrão
-./test-syn.sh 20 2000  # ou ajuste duração/taxa
+git clone https://github.com/juliocataldo/dos-ddos-lab.git
+cd dos-ddos-lab
+docker compose up -d
 ```
 
-O script sobe a stack, mede requisições legítimas e estado `SYN_RECV` antes,
-durante e depois do ataque, e imprime **PASSOU** ou **NÃO PASSOU** com os
-números. Se der "NÃO PASSOU", **o lab de 60 min funciona igual só com
-Slowloris** (já validado) e o SYN flood vira demonstração/discussão em vez
-de hands-on medido.
+- Site alvo: http://localhost:8080
+- Dashboard: http://localhost:3000
 
-## Antes da aula — faça isso você, não o aluno
-
-O build do `attacker` usa `apt-get`, que funcionou no meu teste. Mas o build
-original do `target` (que eu já removi) usava `apk add curl` para baixar o
-exporter do GitHub, e isso **quebrou** por causa de inspeção TLS de rede
-corporativa (certificado self-signed). Troquei o exporter por um container
-separado (imagem oficial `nginx/nginx-prometheus-exporter`), então isso já
-não é mais problema — mas serve de aviso: **evite adicionar qualquer `apk`/
-`curl` que baixe algo da internet durante o build**, nesta rede isso falha.
-
-Mesmo assim, se quiser blindar 100% contra a rede da faculdade:
+Valide o ambiente antes de usar em aula:
 
 ```bash
-docker compose build attacker target
-docker tag dos-lab-attacker SEU_USUARIO/dos-lab-attacker:1
-docker tag dos-lab-target SEU_USUARIO/dos-lab-target:1
-docker push SEU_USUARIO/dos-lab-attacker:1
-docker push SEU_USUARIO/dos-lab-target:1
+./test-syn.sh          # mede o efeito do SYN flood nesta máquina (PASSOU/NÃO PASSOU)
 ```
 
-E troque `build:` por `image: SEU_USUARIO/...` no `docker-compose.yml`.
+Roteiro completo do aluno, com tabela de medição e perguntas de fechamento, em
+[`student/roteiro-aluno.md`](student/roteiro-aluno.md).
 
-## Nota para quem for rodar comandos manualmente no Windows (Git Bash)
-
-Se você usar Git Bash para rodar `docker exec target /mitigate-syn.sh`, o
-Git Bash pode **converter o caminho `/mitigate-syn.sh` para um caminho do
-Windows** e quebrar o comando. Dois jeitos de evitar:
-
-```bash
-MSYS_NO_PATHCONV=1 docker exec target /mitigate-syn.sh
-# ou
-docker exec target sh -c "/mitigate-syn.sh"
-```
-
-Isso só afeta quem roda comandos soltos fora do roteiro — os scripts do
-`student/roteiro-aluno.md` já foram escritos pensando nisso.
-
-## Ainda vale a pena calibrar
-
-Os números (`attack-syn.sh 15 500`, `attack-slowloris.sh 30 180`) foram os
-que funcionaram no meu teste. Rode uma vez no seu hardware real da aula —
-pode precisar de ajuste para cima ou para baixo.
-
-## Estrutura de arquivos
+## Estrutura do repositório
 
 ```
-dos-lab/
+dos-ddos-lab/
   docker-compose.yml
-  target/          # nginx (1 worker/128 conexões) + scripts de mitigação/reset
-  attacker/         # hping3 + slowhttptest + scripts de ataque (rate-limited)
-  prometheus/
-  grafana/          # datasource + dashboard provisionados
-  k6/               # tráfego legítimo (baseline)
-  student/          # roteiro do aluno + termo de autorização
+  target/           # nginx + scripts de mitigação (mitigate-syn.sh, mitigate-slowloris.sh) e reset.sh
+  attacker/          # hping3 + slowhttptest + scripts de ataque (attack-syn.sh, attack-slowloris.sh)
+  prometheus/        # configuração de scrape
+  grafana/           # dashboard e datasource provisionados
+  k6/                # script de tráfego legítimo (baseline.js)
+  student/           # roteiro do aluno + termo de autorização
+  test-syn.sh         # valida o efeito do SYN flood no host atual
 ```
 
-## O que ficou fora deste escopo de 1h
+## Limitações conhecidas
 
-- DNS amplification, HTTP/2 Rapid Reset, ML (CICDDoS2019) — ficaram como
-  demonstração do professor ou take-home, conforme combinado.
-- Wireshark não entra neste roteiro rápido; dá para acrescentar depois pedindo
-  ao aluno para capturar com `docker exec attacker tcpdump -i eth0 -w /tmp/cap.pcap`
-  durante o ataque (o `target` não tem `tcpdump` instalado, só o `attacker`).
+O efeito do SYN flood depende de como o runtime/driver de rede do Docker trata
+pacotes `hping3 --rand-source` — em alguns ambientes (runtimes de container
+mais restritos, certas configurações de rede) os pacotes forjados não chegam
+ao alvo com volume suficiente para gerar `SYN_RECV` mensurável. O Slowloris,
+por operar em HTTP/TCP padrão, não tem essa dependência e é o cenário
+recomendado quando o `test-syn.sh` não confirmar efeito.
+
+## Ética e legislação
+
+Este ambiente é isolado (rede `internal: true`, sem rota para a internet) e
+deve ser usado **exclusivamente** contra o container `target` incluído no
+`docker-compose.yml`. O uso dessas ferramentas contra qualquer sistema de
+terceiros, sem autorização por escrito, é crime previsto na Lei 12.737/2012
+(Lei Carolina Dieckmann). Ver [`student/termo-autorizacao.md`](student/termo-autorizacao.md).
+
+## Autoria
+
+Material didático desenvolvido por Julio Cataldo para disciplina de Cyber
+Security, com apoio de Claude (Anthropic) no desenho e implementação do
+ambiente de laboratório.
